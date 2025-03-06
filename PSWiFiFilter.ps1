@@ -38,7 +38,6 @@ function Write-ErrorMessage {
         [string]$Message
     )
     Write-Host $Message -ForegroundColor Red
-    exit 1
 }
 
 # Success message function
@@ -63,6 +62,7 @@ function Get-AvailableSSIDs {
         $networkOutput = netsh wlan show networks
         if ($LASTEXITCODE -ne 0) {
             Write-ErrorMessage "Failed to retrieve Wi-Fi networks. Please ensure Wi-Fi is enabled."
+            return @()
         }
 
         $ssids = @()
@@ -82,6 +82,7 @@ function Get-AvailableSSIDs {
     }
     catch {
         Write-ErrorMessage "Error retrieving Wi-Fi networks: $_"
+        return @()
     }
 }
 
@@ -109,9 +110,11 @@ function Remove-AllSSIDFilters {
         }
 
         Write-SuccessMessage "Successfully removed all SSID filters"
+        return $true
     }
     catch {
         Write-WarningMessage "Some filters could not be removed, but continuing anyway: $_"
+        return $true # Continue anyway
     }
 }
 
@@ -122,11 +125,14 @@ function Hide-AllSSIDs {
         $result = netsh wlan add filter permission=denyall networktype=infrastructure
         if ($LASTEXITCODE -ne 0) {
             Write-ErrorMessage "Failed to hide all SSIDs: $result"
+            return $false
         }
         Write-SuccessMessage "Successfully hidden all SSIDs"
+        return $true
     }
     catch {
         Write-ErrorMessage "Error hiding SSIDs: $_"
+        return $false
     }
 }
 
@@ -138,12 +144,23 @@ function Add-AllowedSSID {
     try {
         $result = netsh wlan add filter permission=allow ssid="$SSID" networktype=infrastructure
         if ($LASTEXITCODE -ne 0) {
-            Write-ErrorMessage "Failed to allow SSID '$SSID': $result"
+            if ($result -match "already exists") {
+                Write-WarningMessage "SSID '$SSID' filter already exists, skipping..."
+                return $true # Return true as the SSID is effectively allowed
+            }
+            Write-WarningMessage "Failed to allow SSID '$SSID': $result"
+            return $false
         }
         Write-SuccessMessage "Successfully allowed SSID: $SSID"
+        return $true
     }
     catch {
-        Write-ErrorMessage "Error allowing SSID '$SSID': $_"
+        if ($_.Exception.Message -match "already exists") {
+            Write-WarningMessage "SSID '$SSID' filter already exists, skipping..."
+            return $true
+        }
+        Write-WarningMessage "Error allowing SSID '$SSID': $_"
+        return $false
     }
 }
 
@@ -156,9 +173,11 @@ function Save-SSIDsToFile {
     try {
         $SSIDs | Out-File -FilePath $FilePath -Encoding UTF8 -Force
         Write-SuccessMessage "Successfully saved SSIDs to $FilePath"
+        return $true
     }
     catch {
         Write-ErrorMessage "Error saving SSIDs to file '$FilePath': $_"
+        return $false
     }
 }
 
@@ -180,6 +199,23 @@ function Read-SSIDsFromFile {
     }
 }
 
+# Function to display final statistics
+function Show-Statistics {
+    param(
+        [int]$TotalSSIDs,
+        [int]$HiddenSSIDs,
+        [int]$VisibleSSIDs
+    )
+    Write-Host "`nFinal Statistics:" -ForegroundColor Cyan
+    Write-Host "================" -ForegroundColor Cyan
+    Write-Host "Total SSIDs Found: " -NoNewline -ForegroundColor White
+    Write-Host $TotalSSIDs -ForegroundColor Yellow
+    Write-Host "SSIDs Hidden: " -NoNewline -ForegroundColor White
+    Write-Host $HiddenSSIDs -ForegroundColor Red
+    Write-Host "SSIDs Visible: " -NoNewline -ForegroundColor White
+    Write-Host $VisibleSSIDs -ForegroundColor Green
+}
+
 # Main execution begins here
 Write-Host "`nPSWiFiFilter - Wi-Fi SSID Management Tool" -ForegroundColor Cyan
 Write-Host "======================================`n" -ForegroundColor Cyan
@@ -199,15 +235,17 @@ Start-Sleep -Seconds 2  # Wait for network list to update
 # Get current SSIDs
 $availableSSIDs = Get-AvailableSSIDs
 if ($availableSSIDs.Count -eq 0) {
+    Write-ErrorMessage "No Wi-Fi networks found. Exiting..."
     exit 1
 }
+$totalSSIDs = $availableSSIDs.Count
 
 # Display available SSIDs and save to hidden_ssids.txt
 Write-Host "`nAvailable Wi-Fi Networks:" -ForegroundColor Cyan
 foreach ($ssid in $availableSSIDs) {
     Write-Host "  * $ssid"
 }
-Save-SSIDsToFile -FilePath $hiddenFile -SSIDs $availableSSIDs
+Save-SSIDsToFile -FilePath $hiddenFile -SSIDs $availableSSIDs | Out-Null
 Write-Host "`nAll available SSIDs have been saved to: $hiddenFile" -ForegroundColor Cyan
 Write-Host "You can edit this file before running the script again to prepare your allowed SSIDs list." -ForegroundColor Cyan
 
@@ -220,12 +258,15 @@ if ($existingAllowedSSIDs.Count -gt 0) {
     }
     $response = Read-Host "`nWould you like to use these SSIDs? (y/n)"
     if ($response.ToLower() -eq 'y') {
-        $allowedSSIDs = $existingAllowedSSIDs
-        Hide-AllSSIDs
-        foreach ($ssid in $allowedSSIDs) {
-            Add-AllowedSSID -SSID $ssid
+        $allowedSSIDs = @()
+        if (Hide-AllSSIDs) {
+            foreach ($ssid in $existingAllowedSSIDs) {
+                if (Add-AllowedSSID -SSID $ssid) {
+                    $allowedSSIDs += $ssid
+                }
+            }
+            Write-Host "`nApplied $($allowedSSIDs.Count) out of $($existingAllowedSSIDs.Count) existing allowed SSIDs." -ForegroundColor Green
         }
-        Write-Host "`nExisting allowed SSIDs have been applied." -ForegroundColor Green
     }
     else {
         $allowedSSIDs = @()
@@ -237,29 +278,31 @@ else {
 
 # If not using existing allowed SSIDs, get user input
 if ($allowedSSIDs.Count -eq 0) {
-    Hide-AllSSIDs
-    Write-Host "`nEnter SSIDs to allow (type 'done' when finished):" -ForegroundColor Cyan
-    while ($true) {
-        $input = Read-Host "Enter SSID"
-        if ($input.ToLower() -eq 'done') {
-            break
-        }
-        if ($availableSSIDs -contains $input) {
-            $allowedSSIDs += $input
-            Add-AllowedSSID -SSID $input
-        }
-        else {
-            Write-WarningMessage "SSID '$input' is not in the list of available networks. Please try again."
+    if (Hide-AllSSIDs) {
+        Write-Host "`nEnter SSIDs to allow (type 'done' when finished):" -ForegroundColor Cyan
+        while ($true) {
+            $input = Read-Host "Enter SSID"
+            if ($input.ToLower() -eq 'done') {
+                break
+            }
+            if ($availableSSIDs -contains $input) {
+                if (Add-AllowedSSID -SSID $input) {
+                    $allowedSSIDs += $input
+                }
+            }
+            else {
+                Write-WarningMessage "SSID '$input' is not in the list of available networks. Please try again."
+            }
         }
     }
 }
 
-# Calculate hidden SSIDs
+# Calculate hidden SSIDs (only count those that were actually hidden)
 $hiddenSSIDs = $availableSSIDs | Where-Object { $allowedSSIDs -notcontains $_ }
 
 # Save final lists
-Save-SSIDsToFile -FilePath $allowedFile -SSIDs $allowedSSIDs
-Save-SSIDsToFile -FilePath $hiddenFile -SSIDs $hiddenSSIDs
+Save-SSIDsToFile -FilePath $allowedFile -SSIDs $allowedSSIDs | Out-Null
+Save-SSIDsToFile -FilePath $hiddenFile -SSIDs $hiddenSSIDs | Out-Null
 
 # Display summary
 Write-Host "`nOperation Summary:" -ForegroundColor Cyan
@@ -276,6 +319,9 @@ Write-Host "  * Hidden SSIDs: $hiddenFile"
 # Show current network status
 Write-Host "`nCurrent Network Status:" -ForegroundColor Cyan
 Write-Host "--------------------" -ForegroundColor Cyan
-netsh wlan show networks
+netsh wlan show networks | Out-Host
+
+# Show final statistics
+Show-Statistics -TotalSSIDs $totalSSIDs -HiddenSSIDs $hiddenSSIDs.Count -VisibleSSIDs $allowedSSIDs.Count
 
 Write-SuccessMessage "`nPSWiFiFilter completed successfully!"
