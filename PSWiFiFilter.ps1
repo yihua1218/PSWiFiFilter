@@ -171,7 +171,7 @@ function Save-SSIDsToFile {
         [array]$SSIDs
     )
     try {
-        $SSIDs | Out-File -FilePath $FilePath -Encoding UTF8 -Force
+        $SSIDs | Sort-Object -Unique | Out-File -FilePath $FilePath -Encoding UTF8 -Force
         Write-SuccessMessage "Successfully saved SSIDs to $FilePath"
         return $true
     }
@@ -196,6 +196,34 @@ function Read-SSIDsFromFile {
     catch {
         Write-WarningMessage "Error reading SSIDs from file '$FilePath': $_"
         return @()
+    }
+}
+
+# Function to update hidden SSIDs list
+function Update-HiddenSSIDsList {
+    param(
+        [string]$HiddenFilePath,
+        [array]$NewSSIDs,
+        [array]$AllowedSSIDs
+    )
+    try {
+        # Read existing hidden SSIDs
+        $existingHidden = Read-SSIDsFromFile -FilePath $HiddenFilePath
+        
+        # Combine existing and new SSIDs
+        $allSSIDs = @($existingHidden) + @($NewSSIDs)
+        
+        # Remove any SSIDs that are in the allowed list
+        $filteredSSIDs = $allSSIDs | Where-Object { $AllowedSSIDs -notcontains $_ } | Sort-Object -Unique
+        
+        # Save the updated list
+        Save-SSIDsToFile -FilePath $HiddenFilePath -SSIDs $filteredSSIDs | Out-Null
+        
+        return $filteredSSIDs
+    }
+    catch {
+        Write-WarningMessage "Error updating hidden SSIDs list: $_"
+        return $NewSSIDs
     }
 }
 
@@ -240,14 +268,11 @@ if ($availableSSIDs.Count -eq 0) {
 }
 $totalSSIDs = $availableSSIDs.Count
 
-# Display available SSIDs and save to hidden_ssids.txt
+# Display available SSIDs
 Write-Host "`nAvailable Wi-Fi Networks:" -ForegroundColor Cyan
 foreach ($ssid in $availableSSIDs) {
     Write-Host "  * $ssid"
 }
-Save-SSIDsToFile -FilePath $hiddenFile -SSIDs $availableSSIDs | Out-Null
-Write-Host "`nAll available SSIDs have been saved to: $hiddenFile" -ForegroundColor Cyan
-Write-Host "You can edit this file before running the script again to prepare your allowed SSIDs list." -ForegroundColor Cyan
 
 # Check for existing allowed SSIDs
 $existingAllowedSSIDs = Read-SSIDsFromFile -FilePath $allowedFile
@@ -297,12 +322,11 @@ if ($allowedSSIDs.Count -eq 0) {
     }
 }
 
-# Calculate hidden SSIDs (only count those that were actually hidden)
-$hiddenSSIDs = $availableSSIDs | Where-Object { $allowedSSIDs -notcontains $_ }
-
-# Save final lists
+# Save allowed SSIDs list
 Save-SSIDsToFile -FilePath $allowedFile -SSIDs $allowedSSIDs | Out-Null
-Save-SSIDsToFile -FilePath $hiddenFile -SSIDs $hiddenSSIDs | Out-Null
+
+# Update hidden SSIDs list (merges with existing, removes allowed SSIDs)
+$hiddenSSIDs = Update-HiddenSSIDsList -HiddenFilePath $hiddenFile -NewSSIDs $availableSSIDs -AllowedSSIDs $allowedSSIDs
 
 # Display summary
 Write-Host "`nOperation Summary:" -ForegroundColor Cyan
