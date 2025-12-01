@@ -1,0 +1,29 @@
+# Visual Studio & .NET
+.vs/
+bin/
+obj/
+*.user
+*.suo
+*.pdb
+*.cache
+*.dll
+*.exe
+*.xml
+!App.xaml
+!MainWindow.xaml
+!WiFiFilterGUI.csproj
+!app.manifest
+
+# Logs
+*.log
+debug_log.txt
+
+# OS generated files
+Thumbs.db
+Desktop.ini
+
+# Project specific
+# If you want to ignore the list of SSIDs (user configuration) uncomment the following lines:
+# allowed_ssids.txt
+# hidden_ssids.txt
+*.txt
